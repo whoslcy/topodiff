@@ -125,7 +125,7 @@ def main():
             losses = {}
             losses[f"{prefix}_loss"] = loss.detach()
             try:
-                losses[f"{prefix}_R2"] = r2_score(sub_deflect.cpu().detach().numpy(), logits.cpu().detach().numpy())
+                losses[f"{prefix}_R2"] = r2_score(sub_deflect.cpu().detach().numpy(), logits.cpu().detach().numpy(), multioutput='raw_values')
             except ValueError:
                 losses[f"{prefix}_R2"] = th.tensor([10000.0])
 

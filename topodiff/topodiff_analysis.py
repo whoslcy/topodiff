@@ -87,13 +87,13 @@ def mysolidspy(path):
     nodes, mats, elements, loads = pre.readin(folder=path)
 
     # Pre-processing
-    DME , IBC , neq = ass.DME(nodes, elements)
+    DME , IBC , neq = ass.DME(nodes[:, 3:], elements)
     print("Number of nodes: {}".format(nodes.shape[0]))
     print("Number of elements: {}".format(elements.shape[0]))
     print("Number of equations: {}".format(neq))
 
     # System assembly
-    KG = ass.assembler(elements, mats, nodes, neq, DME)
+    KG, _ = ass.assembler(elements, mats, nodes[:, :3], neq, DME)
     RHSG = ass.loadasem(loads, IBC, neq)
 
     # System solution
