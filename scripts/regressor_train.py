@@ -7,12 +7,12 @@ import os
 
 import blobfile as bf
 import torch as th
-import torch.distributed as dist
+# import torch.distributed as dist
 import torch.nn.functional as F
-from torch.nn.parallel.distributed import DistributedDataParallel as DDP
+# from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
 
-from topodiff import dist_util, logger
+from topodiff import logger  #, dist_util
 from topodiff.fp16_util import MixedPrecisionTrainer
 from topodiff.image_datasets_regressor import load_data
 from topodiff.resample import create_named_schedule_sampler
@@ -25,52 +25,54 @@ from topodiff.script_util import (
 from topodiff.train_util import parse_resume_step_from_filename, log_loss_dict
 from sklearn.metrics import r2_score
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 def main():
     args = create_argparser().parse_args()
 
-    dist_util.setup_dist()
+    # dist_util.setup_dist()
     logger.configure()
 
     logger.log("creating model and diffusion...")
     model, diffusion = create_regressor_and_diffusion(in_channels = 1+3+2+2, regressor_depth=4,
         **args_to_dict(args, regressor_and_diffusion_defaults().keys())
     )
-    model.to(dist_util.dev())
+    # model.to(dist_util.dev())
+    device = th.cuda.current_device()
+    model.to(device)
     if args.noised:
         schedule_sampler = create_named_schedule_sampler(
             args.schedule_sampler, diffusion
         )
 
     resume_step = 0
-    if args.resume_checkpoint:
-        resume_step = parse_resume_step_from_filename(args.resume_checkpoint)
-        if dist.get_rank() == 0:
-            logger.log(
-                f"loading model from checkpoint: {args.resume_checkpoint}... at {resume_step} step"
-            )
-            model.load_state_dict(
-                dist_util.load_state_dict(
-                    args.resume_checkpoint, map_location=dist_util.dev()
-                )
-            )
+    # if args.resume_checkpoint:
+    #     resume_step = parse_resume_step_from_filename(args.resume_checkpoint)
+    #     if dist.get_rank() == 0:
+    #         logger.log(
+    #             f"loading model from checkpoint: {args.resume_checkpoint}... at {resume_step} step"
+    #         )
+    #         model.load_state_dict(
+    #             dist_util.load_state_dict(
+    #                 args.resume_checkpoint, map_location=dist_util.dev()
+    #             )
+    #         )
 
-    # Needed for creating correct EMAs and fp16 parameters.
-    dist_util.sync_params(model.parameters())
+    # # Needed for creating correct EMAs and fp16 parameters.
+    # dist_util.sync_params(model.parameters())
 
     mp_trainer = MixedPrecisionTrainer(
         model=model, use_fp16=args.regressor_use_fp16, initial_lg_loss_scale=16.0
     )
 
-    model = DDP(
-        model,
-        device_ids=[dist_util.dev()],
-        output_device=dist_util.dev(),
-        broadcast_buffers=False,
-        bucket_cap_mb=128,
-        find_unused_parameters=False,
-    )
+    # model = DDP(
+    #     model,
+    #     device_ids=[dist_util.dev()],
+    #     output_device=dist_util.dev(),
+    #     broadcast_buffers=False,
+    #     bucket_cap_mb=128,
+    #     find_unused_parameters=False,
+    # )
 
     logger.log("creating data loader...")
     data = load_data(
@@ -91,29 +93,34 @@ def main():
 
     logger.log(f"creating optimizer...")
     opt = AdamW(mp_trainer.master_params, lr=args.lr, weight_decay=args.weight_decay)
-    if args.resume_checkpoint:
-        opt_checkpoint = bf.join(
-            bf.dirname(args.resume_checkpoint), f"opt{resume_step:06}.pt"
-        )
-        logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-        opt.load_state_dict(
-            dist_util.load_state_dict(opt_checkpoint, map_location=dist_util.dev())
-        )
+    # if args.resume_checkpoint:
+    #     opt_checkpoint = bf.join(
+    #         bf.dirname(args.resume_checkpoint), f"opt{resume_step:06}.pt"
+    #     )
+    #     logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
+    #     opt.load_state_dict(
+    #         dist_util.load_state_dict(opt_checkpoint, map_location=dist_util.dev())
+    #     )
 
     logger.log("training regressor model...")
 
     def forward_backward_log(data_loader, prefix="train", print_res=False):
         batch, batch_cons, extra = next(data_loader)
-        deflect = extra["d"].to(dist_util.dev())
+        # deflect = extra["d"].to(dist_util.dev())
+        deflect = extra["d"].to(device)
         
-        batch = batch.to(dist_util.dev())
-        batch_cons = batch_cons.to(dist_util.dev())
+        # batch = batch.to(dist_util.dev())
+        # batch_cons = batch_cons.to(dist_util.dev())
+        batch = batch.to(device)
+        batch_cons = batch_cons.to(device)
         # Noisy images
         if args.noised:
-            t, _ = schedule_sampler.sample(batch.shape[0], dist_util.dev())
+            # t, _ = schedule_sampler.sample(batch.shape[0], dist_util.dev())
+            t, _ = schedule_sampler.sample(batch.shape[0], device)
             batch = diffusion.q_sample(batch, t)
         else:
-            t = th.zeros(batch.shape[0], dtype=th.long, device=dist_util.dev())
+            # t = th.zeros(batch.shape[0], dtype=th.long, device=dist_util.dev())
+            t = th.zeros(batch.shape[0], dtype=th.long, device=device)
         for i, (sub_batch, sub_batch_cons, sub_deflect, sub_t) in enumerate(
             split_microbatches(args.microbatch, batch, batch_cons, deflect, t)
         ):
@@ -125,7 +132,7 @@ def main():
             losses = {}
             losses[f"{prefix}_loss"] = loss.detach()
             try:
-                losses[f"{prefix}_R2"] = r2_score(sub_deflect.cpu().detach().numpy(), logits.cpu().detach().numpy())
+                losses[f"{prefix}_R2"] = r2_score(sub_deflect.cpu().detach().numpy(), logits.cpu().detach().numpy(), multioutput="raw_values",)
             except ValueError:
                 losses[f"{prefix}_R2"] = th.tensor([10000.0])
 
@@ -141,7 +148,7 @@ def main():
         logger.logkv("step", step + resume_step)
         logger.logkv(
             "samples",
-            (step + resume_step + 1) * args.batch_size * dist.get_world_size(),
+            (step + resume_step + 1) * args.batch_size # * dist.get_world_size(),
         )
         if args.anneal_lr:
             set_annealed_lr(opt, args.lr, (step + resume_step) / args.iterations)
@@ -149,24 +156,24 @@ def main():
         mp_trainer.optimize(opt)
         if val_data is not None and not step % args.eval_interval:
             with th.no_grad():
-                with model.no_sync():
-                    model.eval()
-                    forward_backward_log(val_data, prefix="val")
-                    model.train()
+                # with model.no_sync():
+                model.eval()
+                forward_backward_log(val_data, prefix="val")
+                model.train()
         if not step % args.log_interval:
             logger.dumpkvs()
         if (
             step
-            and dist.get_rank() == 0
+            # and dist.get_rank() == 0
             and not (step + resume_step) % args.save_interval
         ):
             logger.log("saving model...")
             save_model(mp_trainer, opt, step + resume_step)
 
-    if dist.get_rank() == 0:
-        logger.log("saving model...")
-        save_model(mp_trainer, opt, step + resume_step)
-    dist.barrier()
+    # if dist.get_rank() == 0:
+    logger.log("saving model...")
+    save_model(mp_trainer, opt, step + resume_step)
+    # dist.barrier()
 
 
 def set_annealed_lr(opt, base_lr, frac_done):
@@ -176,12 +183,12 @@ def set_annealed_lr(opt, base_lr, frac_done):
 
 
 def save_model(mp_trainer, opt, step):
-    if dist.get_rank() == 0:
-        th.save(
-            mp_trainer.master_params_to_state_dict(mp_trainer.master_params),
-            os.path.join(logger.get_dir(), f"model{step:06d}.pt"),
-        )
-        th.save(opt.state_dict(), os.path.join(logger.get_dir(), f"opt{step:06d}.pt"))
+    # if dist.get_rank() == 0:
+    th.save(
+        mp_trainer.master_params_to_state_dict(mp_trainer.master_params),
+        os.path.join(logger.get_dir(), f"model{step:06d}.pt"),
+    )
+    th.save(opt.state_dict(), os.path.join(logger.get_dir(), f"opt{step:06d}.pt"))
 
 
 def compute_top_k(logits, labels, k, reduction="mean"):

@@ -1,0 +1,2 @@
+conda install -y python=3.12 pytorch torchvision torchaudio pytorch-cuda=12.4 mpi4py ipykernel blobfile tqdm matplotlib scikit-learn -c pytorch -c nvidia -c conda-forge
+conda install -y kssgarcia::solidspy
