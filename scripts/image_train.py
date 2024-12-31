@@ -4,7 +4,7 @@ Train the main diffusion model (regardless of guidance) on images.
 
 import argparse
 
-from topodiff import dist_util, logger
+from topodiff import logger
 from topodiff.image_datasets_diffusion_model import load_data
 from topodiff.resample import create_named_schedule_sampler
 from topodiff.script_util import (

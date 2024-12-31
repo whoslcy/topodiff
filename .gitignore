@@ -4,6 +4,7 @@
 /class_logdir
 /data
 /fem_files
+/checkpoints
 ## end of 李辰宇
 
 # Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,jupyternotebooks
