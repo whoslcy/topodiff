@@ -1,187 +1,162 @@
 """Functions to create models."""
 
 from topodiff.unet import (
-  UNetModel,
-  EncoderUNetModel,
+    UNetModel,
+    EncoderUNetModel,
 )
 from topodiff import gaussian_diffusion as gd
-from topodiff.respace import (
-  SpacedDiffusion,
-  space_timesteps,
-)
+from topodiff.respace import SpacedDiffusion
+from typing import List
+import math
+import numpy as np
 
-def classifier(
-    image_size,
-    in_channels,
-    classifier_use_fp16,
-    classifier_width,
-    classifier_depth,
-    classifier_attention_resolutions,
-    classifier_use_scale_shift_norm,
-    classifier_resblock_updown,
-    classifier_pool,
-):
-    if image_size == 512:
-        channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
-    elif image_size == 256:
-        channel_mult = (1, 1, 2, 2, 4, 4)
-    elif image_size == 128:
-        channel_mult = (1, 1, 2, 3, 4)
-    elif image_size == 64:
-        channel_mult = (1, 2, 3, 4)
-    else:
-        raise ValueError(f"unsupported image size: {image_size}")
+image_size = 64
 
-    attention_ds = []
-    for res in classifier_attention_resolutions.split(","):
-        attention_ds.append(image_size // int(res))
+if image_size == 512:
+    channel_multiplier = (0.5, 1, 1, 2, 2, 4, 4)
+elif image_size == 256:
+    channel_multiplier = (1, 1, 2, 2, 4, 4)
+elif image_size == 128:
+    channel_multiplier = (1, 1, 2, 3, 4)
+elif image_size == 64:
+    channel_multiplier = (1, 2, 3, 4)
+else:
+    raise ValueError(f"unsupported image size: {image_size}")
 
+
+def get_attention_resolutions(attention_resolutions: List):
+    return tuple(image_size // resolution for resolution in attention_resolutions)
+
+
+def classifier():
     return EncoderUNetModel(
         image_size=image_size,
-        in_channels=in_channels,
-        model_channels=classifier_width,
+        in_channels=1,
+        model_channels=128,
         out_channels=2,
-        num_res_blocks=classifier_depth,
-        attention_resolutions=tuple(attention_ds),
-        channel_mult=channel_mult,
-        use_fp16=classifier_use_fp16,
+        num_res_blocks=2,
+        attention_resolutions=get_attention_resolutions([32, 16, 8]),
+        channel_mult=channel_multiplier,
+        use_fp16=False,
         num_head_channels=64,
-        use_scale_shift_norm=classifier_use_scale_shift_norm,
-        resblock_updown=classifier_resblock_updown,
-        pool=classifier_pool,
+        use_scale_shift_norm=True,
+        resblock_updown=True,
+        pool="attention",
     )
 
-def regressor(
-    image_size,
-    in_channels,
-    regressor_use_fp16,
-    regressor_width,
-    regressor_depth,
-    regressor_attention_resolutions,
-    regressor_use_scale_shift_norm,
-    regressor_resblock_updown,
-    regressor_pool,
-):
-    if image_size == 512:
-        channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
-    elif image_size == 256:
-        channel_mult = (1, 1, 2, 2, 4, 4)
-    elif image_size == 128:
-        channel_mult = (1, 1, 2, 3, 4)
-    elif image_size == 64:
-        channel_mult = (1, 2, 3, 4)
-    else:
-        raise ValueError(f"unsupported image size: {image_size}")
 
-    attention_ds = []
-    for res in regressor_attention_resolutions.split(","):
-        attention_ds.append(image_size // int(res))
-
+def regressor():
     return EncoderUNetModel(
         image_size=image_size,
-        in_channels=in_channels,
-        model_channels=regressor_width,
+        in_channels=8,
+        model_channels=128,
         out_channels=1,
-        num_res_blocks=regressor_depth,
-        attention_resolutions=tuple(attention_ds),
-        channel_mult=channel_mult,
-        use_fp16=regressor_use_fp16,
+        num_res_blocks=4,
+        attention_resolutions=get_attention_resolutions([32, 16, 8]),
+        channel_mult=channel_multiplier,
+        use_fp16=False,
         num_head_channels=64,
-        use_scale_shift_norm=regressor_use_scale_shift_norm,
-        resblock_updown=regressor_resblock_updown,
-        pool=regressor_pool,
+        use_scale_shift_norm=True,
+        resblock_updown=True,
+        pool="spatial",
     )
 
-def gaussian_diffusion(
-    *,
-    steps,
-    learn_sigma,
-    sigma_small,
-    noise_schedule,
-    use_kl,
-    predict_xstart,
-    rescale_timesteps,
-    rescale_learned_sigmas,
-    timestep_respacing,
-):
-    betas = gd.get_named_beta_schedule(noise_schedule, steps)
-    if use_kl:
-        loss_type = gd.LossType.RESCALED_KL
-    elif rescale_learned_sigmas:
-        loss_type = gd.LossType.RESCALED_MSE
-    else:
-        loss_type = gd.LossType.MSE
+steps = 1000
+
+def alpha_bar(t):
+    return math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
+betas = []
+for i in range(steps):
+    t1 = i / steps
+    t2 = (i + 1) / steps
+    betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), 0.999))
+betas = np.array(betas)
+
+def space_timesteps(num_timesteps, section_counts):
+    """
+    Create a list of timesteps to use from an original diffusion process,
+    given the number of timesteps we want to take from equally-sized portions
+    of the original process.
+
+    For example, if there's 300 timesteps and the section counts are [10,15,20]
+    then the first 100 timesteps are strided to be 10 timesteps, the second 100
+    are strided to be 15 timesteps, and the final 100 are strided to be 20.
+
+    If the stride is a string starting with "ddim", then the fixed striding
+    from the DDIM paper is used, and only one section is allowed.
+
+    :param num_timesteps: the number of diffusion steps in the original
+                          process to divide up.
+    :param section_counts: either a list of numbers, or a string containing
+                           comma-separated numbers, indicating the step count
+                           per section. As a special case, use "ddimN" where N
+                           is a number of steps to use the striding from the
+                           DDIM paper.
+    :return: a set of diffusion steps from the original process to use.
+    """
+    size_per = num_timesteps // len(section_counts)
+    extra = num_timesteps % len(section_counts)
+    start_idx = 0
+    all_steps = []
+    for i, section_count in enumerate(section_counts):
+        size = size_per + (1 if i < extra else 0)
+        if size < section_count:
+            raise ValueError(
+                f"cannot divide section of {size} steps into {section_count}"
+            )
+        if section_count <= 1:
+            frac_stride = 1
+        else:
+            frac_stride = (size - 1) / (section_count - 1)
+        cur_idx = 0.0
+        taken_steps = []
+        for _ in range(section_count):
+            taken_steps.append(start_idx + round(cur_idx))
+            cur_idx += frac_stride
+        all_steps += taken_steps
+        start_idx += size
+    return set(all_steps)
+
+def spaced_diffusion():
+    return SpacedDiffusion(
+        use_timesteps=space_timesteps(steps, [100]),
+        betas=betas,
+        model_mean_type=gd.ModelMeanType.EPSILON,
+        model_var_type=gd.ModelVarType.LEARNED_RANGE,
+        loss_type=gd.LossType.MSE,
+        rescale_timesteps=False,
+    )
+    
+
+def gaussian_diffusion(timestep_respacing: str = ""):
     if not timestep_respacing:
         timestep_respacing = [steps]
     return SpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
-        model_mean_type=(
-            gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
-        ),
-        model_var_type=(
-            (
-                gd.ModelVarType.FIXED_LARGE
-                if not sigma_small
-                else gd.ModelVarType.FIXED_SMALL
-            )
-            if not learn_sigma
-            else gd.ModelVarType.LEARNED_RANGE
-        ),
-        loss_type=loss_type,
-        rescale_timesteps=rescale_timesteps,
+        model_mean_type=gd.ModelMeanType.EPSILON,
+        model_var_type=gd.ModelVarType.LEARNED_RANGE,
+        loss_type=gd.LossType.MSE,
+        rescale_timesteps=False,
     )
 
-def mean_variance(
-    image_size,
-    num_channels,
-    num_res_blocks,
-    channel_mult,
-    learn_sigma,
-    use_checkpoint,
-    attention_resolutions,
-    num_heads,
-    num_head_channels,
-    num_heads_upsample,
-    use_scale_shift_norm,
-    dropout,
-    resblock_updown,
-    use_fp16,
-    use_new_attention_order,
-):
-    if channel_mult == "":
-        if image_size == 512:
-            channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
-        elif image_size == 256:
-            channel_mult = (1, 1, 2, 2, 4, 4)
-        elif image_size == 128:
-            channel_mult = (1, 1, 2, 3, 4)
-        elif image_size == 64:
-            channel_mult = (1, 2, 3, 4)
-        else:
-            raise ValueError(f"unsupported image size: {image_size}")
-    else:
-        channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
 
-    attention_ds = []
-    for res in attention_resolutions.split(","):
-        attention_ds.append(image_size // int(res))
-
+def mean_variance():
     return UNetModel(
         image_size=image_size,
-        in_channels=1+5,
-        model_channels=num_channels,
-        out_channels=(1 if not learn_sigma else 2),
-        num_res_blocks=num_res_blocks,
-        attention_resolutions=tuple(attention_ds),
-        dropout=dropout,
-        channel_mult=channel_mult,
-        use_checkpoint=use_checkpoint,
-        use_fp16=use_fp16,
-        num_heads=num_heads,
-        num_head_channels=num_head_channels,
-        num_heads_upsample=num_heads_upsample,
-        use_scale_shift_norm=use_scale_shift_norm,
-        resblock_updown=resblock_updown,
-        use_new_attention_order=use_new_attention_order,
+        in_channels=6,
+        model_channels=128,
+        out_channels=2,
+        num_res_blocks=3,
+        attention_resolutions=get_attention_resolutions([16, 8]),
+        dropout=0.3,
+        channel_mult=channel_multiplier,
+        use_checkpoint=False,
+        use_fp16=True,
+        num_heads=4,
+        num_head_channels=-1,
+        num_heads_upsample=-1,
+        use_scale_shift_norm=True,
+        resblock_updown=False,
+        use_new_attention_order=False,
     )
