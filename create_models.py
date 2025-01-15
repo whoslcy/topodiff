@@ -151,12 +151,7 @@ def mean_variance():
         attention_resolutions=get_attention_resolutions([16, 8]),
         dropout=0.3,
         channel_mult=channel_multiplier,
-        use_checkpoint=False,
         use_fp16=True,
         num_heads=4,
-        num_head_channels=-1,
-        num_heads_upsample=-1,
         use_scale_shift_norm=True,
-        resblock_updown=False,
-        use_new_attention_order=False,
     )
