@@ -61,16 +61,20 @@ def regressor():
         pool="spatial",
     )
 
+
 steps = 1000
+
 
 def alpha_bar(t):
     return math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
-betas = []
-for i in range(steps):
-    t1 = i / steps
-    t2 = (i + 1) / steps
-    betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), 0.999))
-betas = np.array(betas)
+
+
+betas = np.array([
+    min(1 - alpha_bar(i / steps) / alpha_bar((i + 1) / steps), 0.999)
+    for i in range(steps)
+])
+
+
 
 def spaced_diffusion():
     return SpacedDiffusion(
@@ -81,7 +85,7 @@ def spaced_diffusion():
         loss_type=gd.LossType.MSE,
         rescale_timesteps=False,
     )
-    
+
 
 def gaussian_diffusion(timestep_respacing: str = ""):
     if not timestep_respacing:
