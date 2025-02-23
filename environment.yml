@@ -1,0 +1,19 @@
+name: topodiff-docker
+channels:
+  - pytorch
+  - conda-forge
+  - nvidia
+  - kssgarcia
+dependencies:
+  - python=3.12
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.4 
+  - blobfile
+  - ipykernel
+  - mpi4py
+  - tqdm
+  - matplotlib
+  - scikit-learn
+  - solidspy
